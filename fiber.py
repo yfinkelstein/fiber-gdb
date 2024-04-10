@@ -24,16 +24,17 @@ class FContext:
     def read_registers(self):
         values = {}
         #  gdb.execute('x /8gx {}'.format(ctx.format_string(format='x')))
-        t = gdb.lookup_type('uint64_t').array(8)
+        t = gdb.lookup_type('uint64_t').pointer()
         registers = self.ptr.cast(t)
-        # ignore x87 control word and MXCSR
-        values['r12'] = registers[1]
-        values['r13'] = registers[2]
-        values['r14'] = registers[3]
-        values['r15'] = registers[4]
-        values['rbx'] = registers[5]
-        values['rbp'] = registers[6]
-        values['rip'] = registers[7]
+        # ignore x87 control word and MXCSR - quad 1
+        # ignore 'gurad', quad 2
+        values['r12'] = registers[2]
+        values['r13'] = registers[3]
+        values['r14'] = registers[4]
+        values['r15'] = registers[5]
+        values['rbx'] = registers[6]
+        values['rbp'] = registers[7]
+        values['rip'] = registers[8]
         values['rsp'] = self.ptr
         return values
 
@@ -57,15 +58,16 @@ class Context:
 
     @staticmethod
     def offset_of(member):
-        return int(gdb.parse_and_eval(f"&'boost::fibers::context'::{member}").format_string(format='x'), 0)
+        # return int(gdb.parse_and_eval(f"boost::fibers::context'::{member}").format_string(format='x'), 0)
+        return gdb.parse_and_eval(f"(int)&((boost::fibers::context*)0)->{member}")
 
     @staticmethod
     def offset_of_remote_ready_hook():
         return Context.offset_of('remote_ready_hook_')
 
-    @staticmethod
-    def offset_of_wait_hook():
-        return Context.offset_of('wait_hook_')
+    # @staticmethod
+    # def offset_of_wait_hook():
+    #     return Context.offset_of('wait_hook_')
 
     @staticmethod
     def offset_of_sleep_hook():
@@ -107,21 +109,23 @@ class Context:
         return self.ptr.dereference()['worker_hook_']['next_'] == 0
 
     def is_terminated(self):
-        #  return self.ptr.dereference()['terminated_hook_']['next_'] == 0
         return self.ptr.dereference()['terminated_']
 
     def is_ready(self):
-        return self.ptr.dereference()['ready_hook_']['next_'] == 0
+        fun = gdb.parse_and_eval("boost::fibers::context::ready_is_linked")
+        return fun(self.ptr)    
 
     def is_resumable(self):
         fun = gdb.parse_and_eval("boost::fibers::context::is_resumable")
         return fun(self.ptr)    
     
     def is_sleeping(self):
-        raise NotImplementedError
+        fun = gdb.parse_and_eval("boost::fibers::context::sleep_is_linked")
+        return fun(self.ptr)    
+        # raise NotImplementedError
 
-    def is_waiting(self):
-        return self.ptr.dereference()['wait_hook_']['next_'] == 0
+    # def is_waiting(self):
+    #     return self.ptr.dereference()['wait_hook_']['next_'] == 0
 
     def get_scheduler(self):
         return Scheduler(self.ptr.dereference()['scheduler_'])
@@ -156,10 +160,12 @@ class Context:
         state = 'state: ['
         if self.is_terminated():
             state += 'T'
-        #  if self.is_sleeping():
-        #      state += 'S'
-        if self.is_waiting():
-            state += 'W'
+        if self.is_sleeping():
+            state += 'S'
+        # if self.is_waiting():
+        #     state += 'W'
+        if self.is_resumable():
+            state += 'R'
         state += ']'
         print(state)
 
@@ -207,7 +213,7 @@ class Scheduler:
         # worker_hook_ is at offset 184 in context
         # => pointer in worker_queue_ -184 to get context pointers
         fibers = [
-                #  Context((n.cast(char_p) - 184).cast(context_p))
+                ##  Context((n.cast(char_p) - 184).cast(context_p))
                 Context((n.cast(char_p) - Context.offset_of_worker_hook()).cast(context_p))
                 for n in list_nodes
                 ]
@@ -268,7 +274,7 @@ class RoundRobin(Algorithm):
     """Representation of boost::fibers::algo::round_robin"""
 
     def __init__(self, ptr):
-        t = gdb.lookup_type("'boost::fibers::algo::round_robin'").pointer()
+        t = gdb.lookup_type("boost::fibers::algo::round_robin").pointer()
         super().__init__(ptr.cast(t))
 
 class AsioRoundRobin(Algorithm):
